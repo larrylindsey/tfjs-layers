@@ -32,7 +32,8 @@ import {preprocessConv2DInput} from './convolutional';
  * 2D pooling.
  * @param x
  * @param poolSize
- * @param stridesdes strides. Defaults to [1, 1].
+ * @param strides strides. Defaults to [1, 1].
+ * @param dilations dilations. Defaults to [1, 1]
  * @param padding padding. Defaults to 'valid'.
  * @param dataFormat data format. Defaults to 'channelsLast'.
  * @param poolMode Mode of pooling. Defaults to 'max'.
@@ -40,14 +41,17 @@ import {preprocessConv2DInput} from './convolutional';
  */
 export function pool2d(
     x: Tensor, poolSize: [number, number], strides?: [number, number],
-    padding?: PaddingMode, dataFormat?: DataFormat,
-    poolMode?: PoolMode): Tensor {
+    dilations?: [number, number], padding?: PaddingMode,
+    dataFormat?: DataFormat, poolMode?: PoolMode): Tensor {
   return tidy(() => {
     checkDataFormat(dataFormat);
     checkPoolMode(poolMode);
     checkPaddingMode(padding);
     if (strides == null) {
       strides = [1, 1];
+    }
+    if (dilations == null) {
+      dilations = [1, 1];
     }
     if (padding == null) {
       padding = 'valid';
@@ -64,16 +68,9 @@ export function pool2d(
     x = preprocessConv2DInput(x, dataFormat);  // x is NHWC after preprocessing.
     let y: Tensor;
     const paddingString = (padding === 'same') ? 'same' : 'valid';
-    if (poolMode === 'max') {
-      // TODO(cais): Rank check?
-      y = tfc.maxPool(x as Tensor4D, poolSize, strides, paddingString);
-    } else {  // 'avg'
-      // TODO(cais): Check the dtype and rank of x and give clear error message
-      //   if those are incorrect.
-      y = tfc.avgPool(
-          // TODO(cais): Rank check?
-          x as Tensor3D | Tensor4D, poolSize, strides, paddingString);
-    }
+    y = tfc.pool(
+        x as Tensor3D | Tensor4D, poolSize, poolMode, paddingString, dilations,
+        strides);
     if (dataFormat === 'channelsFirst') {
       y = tfc.transpose(y, [0, 3, 1, 2]);  // NHWC -> NCHW.
     }
@@ -206,7 +203,8 @@ export class MaxPooling1D extends Pooling1D {
       padding: PaddingMode, dataFormat: DataFormat): Tensor {
     checkDataFormat(dataFormat);
     checkPaddingMode(padding);
-    return pool2d(inputs, poolSize, strides, padding, dataFormat, 'max');
+    return pool2d(
+        inputs, poolSize, strides, [1, 1], padding, dataFormat, 'max');
   }
 }
 serialization.registerClass(MaxPooling1D);
@@ -231,7 +229,8 @@ export class AveragePooling1D extends Pooling1D {
       padding: PaddingMode, dataFormat: DataFormat): Tensor {
     checkDataFormat(dataFormat);
     checkPaddingMode(padding);
-    return pool2d(inputs, poolSize, strides, padding, dataFormat, 'avg');
+    return pool2d(
+        inputs, poolSize, strides, [1, 1], padding, dataFormat, 'avg');
   }
 }
 serialization.registerClass(AveragePooling1D);
@@ -256,6 +255,15 @@ export interface Pooling2DLayerConfig extends LayerConfig {
    */
   strides?: number|[number, number];
 
+  /**
+   * The dilation rate to use for the dilated pooling in each dimension.
+   * Should be an integer or array of two integers.
+   *
+   * Currently, specifying any `dilationRate` value != 1 is incompatible with
+   * specifying any `strides` value != 1.
+   */
+  dilationRate?: number|[number, number];
+
   /** The padding type to use for the pooling layer. */
   padding?: PaddingMode;
   /** The data format to use for the pooling layer. */
@@ -268,6 +276,7 @@ export interface Pooling2DLayerConfig extends LayerConfig {
 export abstract class Pooling2D extends Layer {
   protected readonly poolSize: [number, number];
   protected readonly strides: [number, number];
+  protected readonly dilationRate: [number, number];
   protected readonly padding: PaddingMode;
   protected readonly dataFormat: DataFormat;
 
@@ -293,6 +302,21 @@ export abstract class Pooling2D extends Layer {
       // `config.strides` is a number.
       this.strides = [config.strides, config.strides];
     }
+    if (config.dilationRate == null) {
+      this.dilationRate = [1, 1];
+    } else if (Array.isArray(config.dilationRate)) {
+      if (config.dilationRate.length !== 2) {
+        throw new ValueError(
+            `If the dilationRate property of a 2D pooling layer is an Array, ` +
+            `it is expected to have a length of 2, but received length ` +
+            `${config.dilationRate.length}.`);
+      }
+      this.dilationRate = config.dilationRate;
+    } else {
+      // `config.dilationRate` is a number
+      this.dilationRate = [config.dilationRate, config.dilationRate];
+    }
+
     this.padding = config.padding == null ? 'valid' : config.padding;
     this.dataFormat =
         config.dataFormat == null ? 'channelsLast' : config.dataFormat;
@@ -308,10 +332,12 @@ export abstract class Pooling2D extends Layer {
         this.dataFormat === 'channelsFirst' ? inputShape[2] : inputShape[1];
     let cols =
         this.dataFormat === 'channelsFirst' ? inputShape[3] : inputShape[2];
-    rows =
-        convOutputLength(rows, this.poolSize[0], this.padding, this.strides[0]);
-    cols =
-        convOutputLength(cols, this.poolSize[1], this.padding, this.strides[1]);
+    rows = convOutputLength(
+        rows, this.poolSize[0], this.padding, this.strides[0],
+        this.dilationRate[0]);
+    cols = convOutputLength(
+        cols, this.poolSize[1], this.padding, this.strides[1],
+        this.dilationRate[1]);
     if (this.dataFormat === 'channelsFirst') {
       return [inputShape[0], inputShape[1], rows, cols];
     } else {
@@ -321,14 +347,15 @@ export abstract class Pooling2D extends Layer {
 
   protected abstract poolingFunction(
       inputs: Tensor, poolSize: [number, number], strides: [number, number],
-      padding: PaddingMode, dataFormat: DataFormat): Tensor;
+      dilationRate: [number, number], padding: PaddingMode,
+      dataFormat: DataFormat): Tensor;
 
   call(inputs: Tensor|Tensor[], kwargs: Kwargs): Tensor|Tensor[] {
     return tidy(() => {
       this.invokeCallHook(inputs, kwargs);
       return this.poolingFunction(
           getExactlyOneTensor(inputs), this.poolSize, this.strides,
-          this.padding, this.dataFormat);
+          this.dilationRate, this.padding, this.dataFormat);
     });
   }
 
@@ -337,6 +364,7 @@ export abstract class Pooling2D extends Layer {
       poolSize: this.poolSize,
       padding: this.padding,
       strides: this.strides,
+      dilationRate: this.dilationRate,
       dataFormat: this.dataFormat
     };
     const baseConfig = super.getConfig();
@@ -372,10 +400,12 @@ export class MaxPooling2D extends Pooling2D {
 
   protected poolingFunction(
       inputs: Tensor, poolSize: [number, number], strides: [number, number],
-      padding: PaddingMode, dataFormat: DataFormat): Tensor {
+      dilationRate: [number, number], padding: PaddingMode,
+      dataFormat: DataFormat): Tensor {
     checkDataFormat(dataFormat);
     checkPaddingMode(padding);
-    return pool2d(inputs, poolSize, strides, padding, dataFormat, 'max');
+    return pool2d(
+        inputs, poolSize, strides, dilationRate, padding, dataFormat, 'max');
   }
 }
 serialization.registerClass(MaxPooling2D);
@@ -409,10 +439,12 @@ export class AveragePooling2D extends Pooling2D {
 
   protected poolingFunction(
       inputs: Tensor, poolSize: [number, number], strides: [number, number],
-      padding: PaddingMode, dataFormat: DataFormat): Tensor {
+      dilationRate: [number, number], padding: PaddingMode,
+      dataFormat: DataFormat): Tensor {
     checkDataFormat(dataFormat);
     checkPaddingMode(padding);
-    return pool2d(inputs, poolSize, strides, padding, dataFormat, 'avg');
+    return pool2d(
+        inputs, poolSize, strides, dilationRate, padding, dataFormat, 'avg');
   }
 }
 serialization.registerClass(AveragePooling2D);

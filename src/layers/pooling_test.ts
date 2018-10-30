@@ -74,8 +74,9 @@ describeMathCPUAndGPU('pool2d', () => {
           if (dataFormat !== 'channelsFirst') {
             yExpected = tfc.transpose(yExpected, [0, 2, 3, 1]);
           }
-          const y =
-              pool2d(x, [2, 2], [stride, stride], 'same', dataFormat, poolMode);
+          const y = pool2d(
+              x, [2, 2], [stride, stride], [1, 1], 'same', dataFormat,
+              poolMode);
           expectTensorsClose(y, yExpected);
         });
       }
@@ -94,8 +95,8 @@ describeMathCPUAndGPU('pool2d', () => {
         yExpected =
             tensor4d([[[[2, 6, 8], [0, 0, 0], [0, -4, -8]]]], [1, 1, 3, 3]);
       }
-      const y =
-          pool2d(x5by5, [2, 2], [2, 2], 'same', 'channelsFirst', poolMode);
+      const y = pool2d(
+          x5by5, [2, 2], [2, 2], [1, 1], 'same', 'channelsFirst', poolMode);
       expectTensorsClose(y, yExpected);
     });
   }
@@ -110,8 +111,8 @@ describeMathCPUAndGPU('pool2d', () => {
       } else {
         yExpected = tensor4d([[[[2, 6], [0, 0]]]], [1, 1, 2, 2]);
       }
-      const y =
-          pool2d(x5by5, [2, 2], [2, 2], 'valid', 'channelsLast', poolMode);
+      const y = pool2d(
+          x5by5, [2, 2], [2, 2], [1, 1], 'valid', 'channelsLast', poolMode);
       expectTensorsClose(y, tfc.transpose(yExpected, [0, 2, 3, 1]));
     });
   }
